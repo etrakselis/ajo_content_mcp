@@ -1,0 +1,7 @@
+services:
+  ajo-content-mcp:
+    build: .
+    image: ajo-content-api-mcp-server
+    stdin_open: true
+    volumes:
+      - ./config:/app/config:ro
