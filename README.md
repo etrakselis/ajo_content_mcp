@@ -180,6 +180,39 @@ With this layout, `credentials.json` and `settings.json` both live under the sam
 
 This MCP server supports both stdio and HTTP-streamable transports.
 
+## Best settings for local LLMs like Gemma
+
+If you are connecting a smaller local model, prefer these settings:
+
+- Use `stdio` transport when possible.
+- Start with the simplified wrapper tools:
+  - `list_fragments`
+  - `get_fragment`
+  - `create_fragment`
+  - `publish_fragment`
+  - `list_templates`
+  - `get_template`
+- Use the discovery resources first if your client supports MCP resources:
+  - `overview://capabilities`
+  - `overview://operations`
+  - `overview://examples`
+- Fall back to the generated OpenAPI tools only when you need a less common API operation.
+
+Why this helps:
+
+- local LLMs often handle flat tool arguments better than nested `path/query/headers/body` objects
+- some MCP clients discover servers more reliably when resources are exposed
+- `stdio` is usually simpler for local MCP clients than session-based HTTP transports
+
+Example stdio startup for local clients:
+
+```bash
+AJO_SETTINGS_FILE="$(pwd)/config/settings.json" \
+AJO_CREDENTIALS_FILE="$(pwd)/config/credentials.json" \
+MCP_TRANSPORT=stdio \
+node dist/index.js
+```
+
 ### Transport selection
 
 - `MCP_TRANSPORT=stdio` — runs as a stdio MCP server

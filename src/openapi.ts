@@ -100,12 +100,21 @@ export function titleForOperation(op: OperationDef): string {
 
 export function descriptionForOperation(op: OperationDef): string {
   const bodySummary = op.requestBody?.schema ? summarizeRequestSchema(op.requestBody.schema) : undefined;
+  const requiredPath = op.parameters.filter((p) => p.in === 'path' && p.required).map((p) => p.name);
+  const requiredQuery = op.parameters.filter((p) => p.in === 'query' && p.required).map((p) => p.name);
+  const requiredHeaders = op.parameters.filter((p) => p.in === 'header' && p.required).map((p) => p.name);
+  const requiredParts = [
+    requiredPath.length ? `path: ${requiredPath.join(', ')}` : undefined,
+    requiredQuery.length ? `query: ${requiredQuery.join(', ')}` : undefined,
+    requiredHeaders.length ? `headers: ${requiredHeaders.join(', ')}` : undefined,
+    op.requestBody?.required ? 'body: required' : undefined
+  ].filter(Boolean);
   const parts = [
-    `${op.method.toUpperCase()} ${op.path}`,
+    op.summary ?? `${op.method.toUpperCase()} ${op.path}`,
+    `Call ${op.method.toUpperCase()} ${op.path}.`,
+    requiredParts.length ? `Required fields: ${requiredParts.join('; ')}` : 'Required fields: none',
     op.description?.replace(/\s+/g, ' ').trim(),
-    op.requestBody ? `Request body content-type: ${op.requestBody.contentType}` : undefined,
-    bodySummary,
-    op.responseContentTypes.length ? `Response content-types: ${op.responseContentTypes.join(', ')}` : undefined
+    bodySummary ? `Body shape: ${bodySummary}` : undefined
   ].filter(Boolean);
 
   return parts.join('\n\n');
