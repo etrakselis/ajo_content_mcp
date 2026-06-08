@@ -78,6 +78,77 @@ services:
 
 With this layout, `credentials.json` and `settings.json` both live under the same mounted folder.
 
+## Connecting to the MCP Server
+
+This MCP server exposes an HTTP-streamable MCP endpoint at `/mcp`.
+
+### Default URL
+
+- `http://localhost:3000/mcp`
+
+### Environment variables
+
+- `MCP_PORT` — port the server listens on (default: `3000`)
+- `AJO_SETTINGS_FILE` — optional custom path to `settings.json`
+- `AJO_CREDENTIALS_FILE` — optional custom path to `credentials.json`
+
+### HTTP endpoints
+
+- `POST /mcp`
+  - Used for initialization and normal MCP JSON-RPC requests.
+  - The client should send the MCP initialize request first when no `mcp-session-id` header is present.
+  - Subsequent requests must include the `mcp-session-id` header returned by the server.
+
+- `GET /mcp`
+  - Used to open the streamable event channel for the existing session.
+  - Must include the same `mcp-session-id` header from the initialization response.
+
+- `DELETE /mcp`
+  - Used to terminate an active MCP session.
+  - Must include the same `mcp-session-id` header.
+
+### Example connection flow
+
+1. Start the server:
+
+```bash
+MCP_PORT=3000 docker run --rm -it \
+  -v "$(pwd)/config:/app/config:ro" \
+  ajo-content-api-mcp-server
+```
+
+2. Initialize the session with a POST to `/mcp`.
+3. Open a GET stream to `/mcp` using the returned `mcp-session-id`.
+4. Send follow-up POST requests with the same `mcp-session-id`.
+5. Close the session with `DELETE /mcp`.
+
+### Example `curl` usage
+
+```bash
+# 1) Initialize the session and capture the returned MCP session ID
+response=$(curl -s -X POST \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"initialize","params":{"clientName":"ajo-mcp"},"id":1}' \
+  http://localhost:3000/mcp)
+
+session_id=$(echo "$response" | jq -r '.result.sessionId')
+
+# 2) Open the stream using the same session ID
+curl -N -H "mcp-session-id: $session_id" http://localhost:3000/mcp
+
+# 3) Send another MCP request over the same session
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "mcp-session-id: $session_id" \
+  -d '{"jsonrpc":"2.0","method":"someToolCall","params":{"input":{}},"id":2}' \
+  http://localhost:3000/mcp
+```
+
+### Notes
+
+- The server uses the HTTP-streamable transport, so the LLM or MCP client can receive streamed tool results and notifications.
+- The server is scoped to the sandbox defined in `config/settings.json` and authenticated via `config/credentials.json`.
+
 ## Available Tools for LLM Integration
 
 This MCP server exposes the following tools to LLMs for managing Adobe Journey Optimizer content templates and fragments:
