@@ -427,7 +427,7 @@ async function main() {
           const sid = transport.sessionId;
           if (sid && transports[sid]) {
             try {
-              await transports[sid].server.close();
+              await transports[sid].transport.close();
             } catch {
               // ignore cleanup errors
             }
@@ -489,7 +489,6 @@ async function main() {
       await session.transport.handleRequest(req, res);
       // Clean up the transport after session termination
       try { await session.transport.close(); } catch { /* ignore */ }
-      try { await session.server.close(); } catch { /* ignore */ }
       delete transports[sessionId];
     } catch (error) {
       console.error('Error handling session termination:', error);
@@ -516,11 +515,6 @@ async function main() {
         await transports[sid].transport.close();
       } catch (e) {
         console.error(`Error closing transport ${sid}:`, e);
-      }
-      try {
-        await transports[sid].server.close();
-      } catch (e) {
-        console.error(`Error closing server for session ${sid}:`, e);
       }
       delete transports[sid];
     }

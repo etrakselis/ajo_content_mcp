@@ -5,8 +5,9 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { AdobeTokenManager } from './auth.js';
-import { formatSuccessResult } from './result-format.js';
+import { formatCompactJsonResult, formatSuccessResult } from './result-format.js';
 import { buildInputSchema, buildQueryString, chooseAcceptHeader, denormalizeParameterObject, extractOperations, loadOpenApiDocument, replacePathParams, resolveSpecPath, toRequestBody, titleForOperation, toolNameForOperationId, descriptionForOperation, } from './openapi.js';
+import * as z from 'zod/v4';
 function loadConfig() {
     const baseUrl = process.env.AJO_BASE_URL ?? 'https://platform.adobe.io/ajo/content';
     const apiKey = process.env.AJO_API_KEY;
@@ -50,6 +51,45 @@ function makeTextResult(text, isError = false) {
     return {
         isError,
         content: [{ type: 'text', text }]
+    };
+}
+function buildOverviewResource(operations) {
+    return {
+        server: 'Adobe Journey Optimizer Content API MCP server',
+        transport: 'Prefer stdio for local LLMs such as Gemma',
+        commonTools: [
+            'list_fragments',
+            'get_fragment',
+            'create_fragment',
+            'publish_fragment',
+            'list_templates',
+            'get_template'
+        ],
+        notes: [
+            'Use flat wrapper tools first; use generated OpenAPI tools for advanced cases.',
+            'Resources are provided for discovery because some local clients rely on them.',
+            'Generated tools still accept nested path/query/headers/body objects.'
+        ],
+        generatedToolCount: operations.length
+    };
+}
+function buildOperationsResource(operations) {
+    return operations.map((op) => ({
+        tool: toolNameForOperationId(op.operationId),
+        method: op.method.toUpperCase(),
+        path: op.path,
+        summary: titleForOperation(op)
+    }));
+}
+function buildExamplesResource() {
+    return {
+        examples: [
+            { tool: 'list_fragments', input: { limit: 10 } },
+            { tool: 'get_fragment', input: { fragment_id: 'b6d70a45-a149-453b-85ba-809a5d40066d' } },
+            { tool: 'publish_fragment', input: { fragment_id: 'b6d70a45-a149-453b-85ba-809a5d40066d' } },
+            { tool: 'list_templates', input: { limit: 10 } },
+            { tool: 'get_template', input: { template_id: 'template-123' } }
+        ]
     };
 }
 async function callOperation(op, args, config, tokenManager) {
@@ -119,6 +159,63 @@ async function callOperation(op, args, config, tokenManager) {
         clearTimeout(timeout);
     }
 }
+function requireOperation(operations, operationId) {
+    const operation = operations.find((item) => item.operationId === operationId);
+    if (!operation) {
+        throw new Error(`Missing OpenAPI operation: ${operationId}`);
+    }
+    return operation;
+}
+function registerWrapperTools(server, operations, config, tokenManager) {
+    const getFragmentsOp = requireOperation(operations, 'getFragments');
+    const getFragmentOp = requireOperation(operations, 'getFragment');
+    const createFragmentOp = requireOperation(operations, 'createFragment');
+    const publishFragmentOp = requireOperation(operations, 'publishFragment');
+    const getTemplatesOp = requireOperation(operations, 'getTemplates');
+    const getTemplateOp = requireOperation(operations, 'getTemplate');
+    server.registerTool('list_fragments', {
+        title: 'List fragments',
+        description: 'List content fragments with simple flat arguments. Use this first for discovery.',
+        inputSchema: z.object({
+            limit: z.number().int().positive().max(200).optional(),
+            start: z.string().optional(),
+            order_by: z.string().optional(),
+            property: z.array(z.string()).optional()
+        }).strict()
+    }, async (args) => callOperation(getFragmentsOp, { query: args }, config, tokenManager));
+    server.registerTool('get_fragment', {
+        title: 'Get fragment',
+        description: 'Fetch a content fragment by fragment ID.',
+        inputSchema: z.object({ fragment_id: z.string().min(1) }).strict()
+    }, async (args) => callOperation(getFragmentOp, { path: { fragment_id: args.fragment_id } }, config, tokenManager));
+    server.registerTool('create_fragment', {
+        title: 'Create fragment',
+        description: 'Create a content fragment with a flat body object matching the Adobe API.',
+        inputSchema: z.object({
+            body: z.record(z.string(), z.any())
+        }).strict()
+    }, async (args) => callOperation(createFragmentOp, { body: args.body }, config, tokenManager));
+    server.registerTool('publish_fragment', {
+        title: 'Publish fragment',
+        description: 'Publish a fragment by fragment ID.',
+        inputSchema: z.object({ fragment_id: z.string().min(1) }).strict()
+    }, async (args) => callOperation(publishFragmentOp, { body: { fragmentId: args.fragment_id } }, config, tokenManager));
+    server.registerTool('list_templates', {
+        title: 'List templates',
+        description: 'List content templates with simple flat arguments.',
+        inputSchema: z.object({
+            limit: z.number().int().positive().max(200).optional(),
+            start: z.string().optional(),
+            order_by: z.string().optional(),
+            property: z.array(z.string()).optional()
+        }).strict()
+    }, async (args) => callOperation(getTemplatesOp, { query: args }, config, tokenManager));
+    server.registerTool('get_template', {
+        title: 'Get template',
+        description: 'Fetch a content template by template ID.',
+        inputSchema: z.object({ template_id: z.string().min(1) }).strict()
+    }, async (args) => callOperation(getTemplateOp, { path: { template_id: args.template_id } }, config, tokenManager));
+}
 async function main() {
     const config = loadConfig();
     const specPath = await resolveSpecPath(process.env.AJO_OPENAPI_SPEC_PATH ?? './spec/content-api.yaml');
@@ -141,6 +238,22 @@ async function main() {
             instructions: 'Use the tools to create, list, update, delete, and publish content templates and fragments.'
         });
         const registerTool = server.registerTool.bind(server);
+        const registerResource = server.registerResource?.bind(server);
+        if (registerResource) {
+            registerResource('server_overview', 'overview://capabilities', {
+                title: 'Server overview',
+                description: 'High-level capabilities and Gemma-friendly guidance.'
+            }, async () => formatCompactJsonResult(buildOverviewResource(operations)));
+            registerResource('operation_index', 'overview://operations', {
+                title: 'Operation index',
+                description: 'Compact list of generated API-backed tools.'
+            }, async () => formatCompactJsonResult(buildOperationsResource(operations)));
+            registerResource('usage_examples', 'overview://examples', {
+                title: 'Usage examples',
+                description: 'Starter tool examples for local LLM clients.'
+            }, async () => formatCompactJsonResult(buildExamplesResource()));
+        }
+        registerWrapperTools(server, operations, config, tokenManager);
         for (const op of operations) {
             registerTool(toolNameForOperationId(op.operationId), {
                 title: titleForOperation(op),
@@ -197,7 +310,7 @@ async function main() {
                     const sid = transport.sessionId;
                     if (sid && transports[sid]) {
                         try {
-                            await transports[sid].server.close();
+                            await transports[sid].transport.close();
                         }
                         catch {
                             // ignore cleanup errors
@@ -258,10 +371,6 @@ async function main() {
                 await session.transport.close();
             }
             catch { /* ignore */ }
-            try {
-                await session.server.close();
-            }
-            catch { /* ignore */ }
             delete transports[sessionId];
         }
         catch (error) {
@@ -288,12 +397,6 @@ async function main() {
             }
             catch (e) {
                 console.error(`Error closing transport ${sid}:`, e);
-            }
-            try {
-                await transports[sid].server.close();
-            }
-            catch (e) {
-                console.error(`Error closing server for session ${sid}:`, e);
             }
             delete transports[sid];
         }
