@@ -196,7 +196,7 @@ async function main() {
           title: titleForOperation(op),
           readOnlyHint: op.method === 'get',
           destructiveHint: op.method === 'delete',
-          idempotentHint: op.method === 'get' || op.toString() === 'put' || op.method === 'delete'
+          idempotentHint: op.method === 'get' || op.method === 'put' || op.method === 'delete'
         }
       },
       async (args: any) => callOperation(op, args, config, tokenManager)
