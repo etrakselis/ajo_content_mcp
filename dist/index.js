@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { AdobeTokenManager } from './auth.js';
+import { formatSuccessResult } from './result-format.js';
 import { buildInputSchema, buildQueryString, chooseAcceptHeader, denormalizeParameterObject, extractOperations, loadOpenApiDocument, replacePathParams, resolveSpecPath, toRequestBody, titleForOperation, toolNameForOperationId, descriptionForOperation, } from './openapi.js';
 function loadConfig() {
     const baseUrl = process.env.AJO_BASE_URL ?? 'https://platform.adobe.io/ajo/content';
@@ -93,10 +93,7 @@ async function callOperation(op, args, config, tokenManager) {
             return makeTextResult(`HTTP ${response.status} ${response.statusText}\n\n${rawText}`, true);
         }
         if (!rawText) {
-            return {
-                content: [{ type: 'text', text: `HTTP ${response.status} ${response.statusText} (no response body)` }],
-                structuredContent: { status: response.status, data: null }
-            };
+            return formatSuccessResult(response, null);
         }
         const parsed = contentType.includes('json') || contentType.includes('+json')
             ? (() => {
@@ -109,15 +106,9 @@ async function callOperation(op, args, config, tokenManager) {
             })()
             : undefined;
         if (parsed !== undefined) {
-            return {
-                content: [{ type: '...', text: JSON.stringify(parsed, null, 2) }],
-                structuredContent: { status: response.status, data: parsed }
-            };
+            return formatSuccessResult(response, parsed);
         }
-        return {
-            content: [{ type: 'text', text: rawText }],
-            structuredContent: { status: response.status, data: rawText }
-        };
+        return formatSuccessResult(response, rawText);
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -140,51 +131,77 @@ async function main() {
         tokenSkewSeconds: config.tokenSkewSeconds,
         timeoutMs: config.timeoutMs
     });
-    const server = new McpServer({
-        name: 'ajo-content-api-mcp-server',
-        version: '0.2.0',
-        description: 'Adobe Journey Optimizer Content API MCP server'
-    }, {
-        instructions: 'Use the tools to create, list, update, delete, and publish content templates and fragments.'
-    });
-    const registerTool = server.registerTool.bind(server);
-    for (const op of operations) {
-        registerTool(toolNameForOperationId(op.operationId), {
-            title: titleForOperation(op),
-            description: descriptionForOperation(op),
-            inputSchema: buildInputSchema(op),
-            annotations: {
+    const createServer = () => {
+        const server = new McpServer({
+            name: 'ajo-content-api-mcp-server',
+            version: '0.2.0',
+            description: 'Adobe Journey Optimizer Content API MCP server'
+        }, {
+            instructions: 'Use the tools to create, list, update, delete, and publish content templates and fragments.'
+        });
+        const registerTool = server.registerTool.bind(server);
+        for (const op of operations) {
+            registerTool(toolNameForOperationId(op.operationId), {
                 title: titleForOperation(op),
-                readOnlyHint: op.method === 'get',
-                destructiveHint: op.method === 'delete',
-                idempotentHint: op.method === 'get' || op.method === 'put' || op.method === 'delete'
-            }
-        }, async (args) => callOperation(op, args, config, tokenManager));
-    }
+                description: descriptionForOperation(op),
+                inputSchema: buildInputSchema(op),
+                annotations: {
+                    title: titleForOperation(op),
+                    readOnlyHint: op.method === 'get',
+                    destructiveHint: op.method === 'delete',
+                    idempotentHint: op.method === 'get' || op.method === 'put' || op.method === 'delete'
+                }
+            }, async (args) => callOperation(op, args, config, tokenManager));
+        }
+        return server;
+    };
+    // If MCP should run over HTTP (streamable), create an Express app
     const MCP_PORT = Number(process.env.MCP_PORT ?? 3000);
     const app = createMcpExpressApp();
     const transports = {};
     const mcpPostHandler = async (req, res) => {
         try {
             const sessionId = String(req.headers['mcp-session-id'] ?? '').trim() || undefined;
+            // No session id and an initialization request: create a new transport and connect it
             if (!sessionId && isInitializeRequest(req.body)) {
-                const transport = new StreamableHTTPServerTransport();
+                const transport = new StreamableHTTPServerTransport({
+                    sessionIdGenerator: () => randomUUID()
+                });
+                const server = createServer();
+                transport.onclose = async () => {
+                    const sid = transport.sessionId;
+                    if (sid && transports[sid]) {
+                        try {
+                            await transports[sid].server.close();
+                        }
+                        catch {
+                            // ignore cleanup errors
+                        }
+                        delete transports[sid];
+                    }
+                };
+                transport.onerror = (error) => {
+                    console.error('Stream transport error for session', transport.sessionId, error);
+                };
+                // Connect transport to the MCP server before handling request so responses can flow back
                 await server.connect(transport);
+                // Handle the incoming initialization request
                 await transport.handleRequest(req, res, req.body);
+                // Store transport by its generated session id for subsequent requests
                 if (transport.sessionId)
-                    transports[transport.sessionId] = transport;
+                    transports[transport.sessionId] = { transport, server };
                 return;
             }
             if (!sessionId) {
                 res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID provided' }, id: null });
                 return;
             }
-            const transport = transports[sessionId];
-            if (!transport) {
+            const session = transports[sessionId];
+            if (!session) {
                 res.status(404).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Not Found: Unknown session ID' }, id: null });
                 return;
             }
-            await transport.handleRequest(req, res, req.body);
+            await session.transport.handleRequest(req, res, req.body);
         }
         catch (error) {
             console.error('Error handling MCP POST request:', error);
@@ -199,7 +216,7 @@ async function main() {
             res.status(400).send('Invalid or missing session ID');
             return;
         }
-        const transport = transports[sessionId];
+        const transport = transports[sessionId].transport;
         await transport.handleRequest(req, res);
     };
     const mcpDeleteHandler = async (req, res) => {
@@ -209,9 +226,17 @@ async function main() {
             return;
         }
         try {
-            const transport = transports[sessionId];
-            await transport.handleRequest(req, res);
-            try { await transport.close(); } catch (e) { }
+            const session = transports[sessionId];
+            await session.transport.handleRequest(req, res);
+            // Clean up the transport after session termination
+            try {
+                await session.transport.close();
+            }
+            catch { /* ignore */ }
+            try {
+                await session.server.close();
+            }
+            catch { /* ignore */ }
             delete transports[sessionId];
         }
         catch (error) {
@@ -234,10 +259,16 @@ async function main() {
         console.log('Shutting down MCP server...');
         for (const sid of Object.keys(transports)) {
             try {
-                await transports[sid].close();
+                await transports[sid].transport.close();
             }
             catch (e) {
                 console.error(`Error closing transport ${sid}:`, e);
+            }
+            try {
+                await transports[sid].server.close();
+            }
+            catch (e) {
+                console.error(`Error closing server for session ${sid}:`, e);
             }
             delete transports[sid];
         }

@@ -122,6 +122,8 @@ MCP_PORT=3000 docker run --rm -it \
 4. Send follow-up POST requests with the same `mcp-session-id`.
 5. Close the session with `DELETE /mcp`.
 
+The repository test files are lightweight smoke checks. The HTTP example test is skipped unless you manually run the MCP server locally, and the stdio test is skipped unless the required Adobe environment variables are present.
+
 ### Example `curl` usage
 
 ```bash
@@ -157,14 +159,30 @@ This MCP server exposes the following tools to LLMs for managing Adobe Journey O
 
 #### `createTemplate`
 Create a new content template for use in campaigns and journeys.
-- **Input**: Template name, description, channel type, and content
+- **Input**: `body` object matching the OpenAPI schema, for example `name`, `description`, `templateType`, `channels`, and `template`
 - **Output**: Created template with auto-generated ID and metadata
 - **Hint**: Destructive operation
+
+Example email template request body:
+
+```json
+{
+  "body": {
+    "name": "Test Template",
+    "description": "Test Description",
+    "templateType": "html",
+    "channels": ["email"],
+    "template": {
+      "html": "<h1>Hello</h1>"
+    }
+  }
+}
+```
 
 #### `getTemplates`
 List all available content templates with optional filtering and pagination.
 - **Input**: Optional filters (by name, channel, template type, creation date, etc.), pagination params
-- **Output**: Paginated list of template summaries
+- **Output**: JSON text payload including `status`, response headers, and returned data
 - **Hint**: Read-only operation
 
 #### `getTemplate`

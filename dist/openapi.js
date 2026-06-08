@@ -46,10 +46,12 @@ export function titleForOperation(op) {
     return op.summary ?? op.operationId;
 }
 export function descriptionForOperation(op) {
+    const bodySummary = op.requestBody?.schema ? summarizeRequestSchema(op.requestBody.schema) : undefined;
     const parts = [
         `${op.method.toUpperCase()} ${op.path}`,
         op.description?.replace(/\s+/g, ' ').trim(),
         op.requestBody ? `Request body content-type: ${op.requestBody.contentType}` : undefined,
+        bodySummary,
         op.responseContentTypes.length ? `Response content-types: ${op.responseContentTypes.join(', ')}` : undefined
     ].filter(Boolean);
     return parts.join('\n\n');
@@ -125,7 +127,7 @@ export function denormalizeParameterObject(values, parameters) {
     return result;
 }
 export function chooseAcceptHeader(op) {
-    return op.responseContentTypes[0] ?? op.requestBody?.contentType ?? 'application/json';
+    return preferJsonContentType(op.responseContentTypes) ?? op.requestBody?.contentType ?? 'application/json';
 }
 export function toRequestBody(body, contentType) {
     if (body === undefined)
@@ -156,7 +158,7 @@ function resolveRequestBody(requestBody, componentRequestBodies, componentSchema
     const resolved = requestBody.$ref ? componentRequestBodies[requestBody.$ref.split('/').pop() ?? ''] : requestBody;
     if (!resolved)
         return undefined;
-    const entry = Object.entries(resolved.content ?? {})[0];
+    const entry = pickPreferredContentEntry(resolved.content ?? {});
     if (!entry)
         return undefined;
     const [contentType, mediaType] = entry;
@@ -180,6 +182,75 @@ function collectResponseContentTypes(responses, componentResponses) {
         }
     }
     return [...types];
+}
+function preferJsonContentType(contentTypes) {
+    return contentTypes.find((value) => value === 'application/json')
+        ?? contentTypes.find((value) => value.includes('+json'))
+        ?? contentTypes.find((value) => value.includes('json'))
+        ?? contentTypes[0];
+}
+function pickPreferredContentEntry(content) {
+    const entries = Object.entries(content);
+    if (!entries.length)
+        return undefined;
+    const preferredType = preferJsonContentType(entries.map(([contentType]) => contentType));
+    return entries.find(([contentType]) => contentType === preferredType);
+}
+function summarizeRequestSchema(schema) {
+    if (!schema || typeof schema !== 'object')
+        return undefined;
+    const required = Array.isArray(schema.required) ? schema.required : [];
+    const properties = schema.properties && typeof schema.properties === 'object'
+        ? Object.keys(schema.properties)
+        : [];
+    if (!properties.length)
+        return undefined;
+    const requiredText = required.length ? `Required fields: ${required.join(', ')}` : 'Required fields: none';
+    const availableText = `Available fields: ${properties.join(', ')}`;
+    const example = buildExampleFromSchema(schema);
+    const exampleText = example ? `Example body: ${JSON.stringify(example)}` : undefined;
+    return [requiredText, availableText, exampleText].filter(Boolean).join('\n');
+}
+function buildExampleFromSchema(schema) {
+    if (!schema || typeof schema !== 'object')
+        return undefined;
+    if (schema.const !== undefined)
+        return schema.const;
+    if (Array.isArray(schema.enum) && schema.enum.length)
+        return schema.enum[0];
+    if (schema.example !== undefined)
+        return schema.example;
+    if (schema.default !== undefined)
+        return schema.default;
+    if (schema.oneOf?.length)
+        return buildExampleFromSchema(schema.oneOf[0]);
+    if (schema.anyOf?.length)
+        return buildExampleFromSchema(schema.anyOf[0]);
+    if (schema.allOf?.length) {
+        const merged = mergeAllOfSchema(schema);
+        return buildExampleFromSchema(merged);
+    }
+    switch (schema.type) {
+        case 'object': {
+            const properties = schema.properties ?? {};
+            const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+            const entries = Object.entries(properties)
+                .filter(([key]) => required.has(key))
+                .map(([key, value]) => [key, buildExampleFromSchema(value)]);
+            return Object.fromEntries(entries);
+        }
+        case 'array':
+            return schema.items ? [buildExampleFromSchema(schema.items)] : [];
+        case 'string':
+            return schema.format === 'date-time' ? '2026-06-08T00:00:00Z' : 'string';
+        case 'integer':
+        case 'number':
+            return 0;
+        case 'boolean':
+            return false;
+        default:
+            return undefined;
+    }
 }
 function objectShapeFromParameters(parameters) {
     const shape = {};

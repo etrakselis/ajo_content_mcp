@@ -5,6 +5,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { AdobeTokenManager } from './auth.js';
+import { formatSuccessResult } from './result-format.js';
 import {
   buildInputSchema,
   buildQueryString,
@@ -125,10 +126,7 @@ async function callOperation(op: any, args: any, config: Config, tokenManager: A
     }
 
     if (!rawText) {
-      return {
-        content: [{ type: 'text' as const, text: `HTTP ${response.status} ${response.statusText} (no response body)` }],
-        structuredContent: { status: response.status, data: null }
-      };
+      return formatSuccessResult(response, null);
     }
 
     const parsed = contentType.includes('json') || contentType.includes('+json')
@@ -142,16 +140,10 @@ async function callOperation(op: any, args: any, config: Config, tokenManager: A
       : undefined;
 
     if (parsed !== undefined) {
-      return {
-        content: [{ type: '...' as const, text: JSON.stringify(parsed, null, 2) }],
-        structuredContent: { status: response.status, data: parsed }
-      };
+      return formatSuccessResult(response, parsed);
     }
 
-    return {
-      content: [{ type: 'text' as const, text: rawText }],
-      structuredContent: { status: response.status, data: rawText }
-    };
+    return formatSuccessResult(response, rawText);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return makeTextResult(`Failed to call ${op.operationId}: ${message}`, true);
@@ -174,45 +166,52 @@ async function main() {
     timeoutMs: config.timeoutMs
   });
 
-  const server = new McpServer(
-    {
-      name: 'ajo-content-api-mcp-server',
-      version: '0.2.0',
-      description: 'Adobe Journey Optimizer Content API MCP server'
-    },
-
-    {
-      instructions: 'Use the tools to create, list, update, delete, and publish content templates and fragments.'
-    }
-  );
-
-  const registerTool: any = server.registerTool.bind(server);
-
-  for (const op of operations) {
-    registerTool(
-      toolNameForOperationId(op.operationId),
+  const createServer = () => {
+    const server = new McpServer(
       {
-        title: titleForOperation(op),
-        description: descriptionForOperation(op),
-        inputSchema: buildInputSchema(op),
-        annotations: {
-          title: titleForOperation(op),
-          readOnlyHint: op.method === 'get',
-          destructiveHint: op.method === 'delete',
-          idempotentHint: op.method === 'get' || op.method === 'put' || op.method === 'delete'
-        }
+        name: 'ajo-content-api-mcp-server',
+        version: '0.2.0',
+        description: 'Adobe Journey Optimizer Content API MCP server'
       },
-      async (args: any) => callOperation(op, args, config, tokenManager)
+      {
+        instructions: 'Use the tools to create, list, update, delete, and publish content templates and fragments.'
+      }
     );
-  }
+
+    const registerTool: any = server.registerTool.bind(server);
+
+    for (const op of operations) {
+      registerTool(
+        toolNameForOperationId(op.operationId),
+        {
+          title: titleForOperation(op),
+          description: descriptionForOperation(op),
+          inputSchema: buildInputSchema(op),
+          annotations: {
+            title: titleForOperation(op),
+            readOnlyHint: op.method === 'get',
+            destructiveHint: op.method === 'delete',
+            idempotentHint: op.method === 'get' || op.method === 'put' || op.method === 'delete'
+          }
+        },
+        async (args: any) => callOperation(op, args, config, tokenManager)
+      );
+    }
+
+    return server;
+  };
 
   // If MCP should run over HTTP (streamable), create an Express app
   const MCP_PORT = Number(process.env.MCP_PORT ?? 3000);
 
   const app = createMcpExpressApp();
 
-  // Map of active transports by session id
-  const transports: Record<string, StreamableHTTPServerTransport> = {};
+  type SessionState = {
+    transport: StreamableHTTPServerTransport;
+    server: McpServer;
+  };
+
+  const transports: Record<string, SessionState> = {};
 
   const mcpPostHandler = async (req: any, res: any) => {
     try {
@@ -220,13 +219,33 @@ async function main() {
 
       // No session id and an initialization request: create a new transport and connect it
       if (!sessionId && isInitializeRequest(req.body)) {
-        const transport = new StreamableHTTPServerTransport();
+        const transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID()
+        });
+        const server = createServer();
+
+        transport.onclose = async () => {
+          const sid = transport.sessionId;
+          if (sid && transports[sid]) {
+            try {
+              await transports[sid].server.close();
+            } catch {
+              // ignore cleanup errors
+            }
+            delete transports[sid];
+          }
+        };
+
+        transport.onerror = (error: any) => {
+          console.error('Stream transport error for session', transport.sessionId, error);
+        };
+
         // Connect transport to the MCP server before handling request so responses can flow back
         await server.connect(transport);
         // Handle the incoming initialization request
         await transport.handleRequest(req, res, req.body);
         // Store transport by its generated session id for subsequent requests
-        if (transport.sessionId) transports[transport.sessionId] = transport;
+        if (transport.sessionId) transports[transport.sessionId] = { transport, server };
         return;
       }
 
@@ -235,13 +254,13 @@ async function main() {
         return;
       }
 
-      const transport = transports[sessionId];
-      if (!transport) {
+      const session = transports[sessionId];
+      if (!session) {
         res.status(404).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Not Found: Unknown session ID' }, id: null });
         return;
       }
 
-      await transport.handleRequest(req, res, req.body);
+      await session.transport.handleRequest(req, res, req.body);
     } catch (error) {
       console.error('Error handling MCP POST request:', error);
       if (!res.headersSent) {
@@ -256,7 +275,7 @@ async function main() {
       res.status(400).send('Invalid or missing session ID');
       return;
     }
-    const transport = transports[sessionId];
+    const transport = transports[sessionId].transport;
     await transport.handleRequest(req, res);
   };
 
@@ -267,10 +286,11 @@ async function main() {
       return;
     }
     try {
-      const transport = transports[sessionId];
-      await transport.handleRequest(req, res);
+      const session = transports[sessionId];
+      await session.transport.handleRequest(req, res);
       // Clean up the transport after session termination
-      try { await transport.close(); } catch { /* ignore */ }
+      try { await session.transport.close(); } catch { /* ignore */ }
+      try { await session.server.close(); } catch { /* ignore */ }
       delete transports[sessionId];
     } catch (error) {
       console.error('Error handling session termination:', error);
@@ -294,9 +314,14 @@ async function main() {
     console.log('Shutting down MCP server...');
     for (const sid of Object.keys(transports)) {
       try {
-        await transports[sid].close();
+        await transports[sid].transport.close();
       } catch (e) {
         console.error(`Error closing transport ${sid}:`, e);
+      }
+      try {
+        await transports[sid].server.close();
+      } catch (e) {
+        console.error(`Error closing server for session ${sid}:`, e);
       }
       delete transports[sid];
     }
