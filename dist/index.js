@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { AdobeTokenManager } from './auth.js';
 import { buildInputSchema, buildQueryString, chooseAcceptHeader, denormalizeParameterObject, extractOperations, loadOpenApiDocument, replacePathParams, resolveSpecPath, toRequestBody, titleForOperation, toolNameForOperationId, descriptionForOperation, } from './openapi.js';
 function loadConfig() {
@@ -158,8 +161,88 @@ async function main() {
             }
         }, async (args) => callOperation(op, args, config, tokenManager));
     }
-    const transport = new StdioServerTransport();
-    await server.connect(transport);
+    const MCP_PORT = Number(process.env.MCP_PORT ?? 3000);
+    const app = createMcpExpressApp();
+    const transports = {};
+    const mcpPostHandler = async (req, res) => {
+        try {
+            const sessionId = String(req.headers['mcp-session-id'] ?? '').trim() || undefined;
+            if (!sessionId && isInitializeRequest(req.body)) {
+                const transport = new StreamableHTTPServerTransport();
+                await server.connect(transport);
+                await transport.handleRequest(req, res, req.body);
+                if (transport.sessionId)
+                    transports[transport.sessionId] = transport;
+                return;
+            }
+            if (!sessionId) {
+                res.status(400).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Bad Request: No valid session ID provided' }, id: null });
+                return;
+            }
+            const transport = transports[sessionId];
+            if (!transport) {
+                res.status(404).json({ jsonrpc: '2.0', error: { code: -32000, message: 'Not Found: Unknown session ID' }, id: null });
+                return;
+            }
+            await transport.handleRequest(req, res, req.body);
+        }
+        catch (error) {
+            console.error('Error handling MCP POST request:', error);
+            if (!res.headersSent) {
+                res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error' }, id: null });
+            }
+        }
+    };
+    const mcpGetHandler = async (req, res) => {
+        const sessionId = String(req.headers['mcp-session-id'] ?? '').trim();
+        if (!sessionId || !transports[sessionId]) {
+            res.status(400).send('Invalid or missing session ID');
+            return;
+        }
+        const transport = transports[sessionId];
+        await transport.handleRequest(req, res);
+    };
+    const mcpDeleteHandler = async (req, res) => {
+        const sessionId = String(req.headers['mcp-session-id'] ?? '').trim();
+        if (!sessionId || !transports[sessionId]) {
+            res.status(400).send('Invalid or missing session ID');
+            return;
+        }
+        try {
+            const transport = transports[sessionId];
+            await transport.handleRequest(req, res);
+            try { await transport.close(); } catch (e) { }
+            delete transports[sessionId];
+        }
+        catch (error) {
+            console.error('Error handling session termination:', error);
+            if (!res.headersSent)
+                res.status(500).send('Error processing session termination');
+        }
+    };
+    app.post('/mcp', mcpPostHandler);
+    app.get('/mcp', mcpGetHandler);
+    app.delete('/mcp', mcpDeleteHandler);
+    const serverInstance = app.listen(MCP_PORT, (err) => {
+        if (err) {
+            console.error('Failed to start MCP HTTP server:', err);
+            process.exit(1);
+        }
+        console.log(`MCP Streamable HTTP Server listening on port ${MCP_PORT}`);
+    });
+    process.on('SIGINT', async () => {
+        console.log('Shutting down MCP server...');
+        for (const sid of Object.keys(transports)) {
+            try {
+                await transports[sid].close();
+            }
+            catch (e) {
+                console.error(`Error closing transport ${sid}:`, e);
+            }
+            delete transports[sid];
+        }
+        serverInstance.close(() => process.exit(0));
+    });
 }
 main().catch((error) => {
     console.error(error instanceof Error ? error.stack ?? error.message : String(error));
