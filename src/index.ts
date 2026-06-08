@@ -33,6 +33,8 @@ type Config = {
   tokenSkewSeconds: number;
 };
 
+type TransportMode = 'http' | 'stdio';
+
 function loadConfig(): Config {
   const baseUrl = process.env.AJO_BASE_URL ?? 'https://platform.adobe.io/ajo/content';
   const apiKey = process.env.AJO_API_KEY;
@@ -200,6 +202,36 @@ async function main() {
 
     return server;
   };
+
+  const transportMode = (process.env.MCP_TRANSPORT ?? 'http').trim().toLowerCase() as TransportMode;
+
+  if (transportMode === 'stdio') {
+    const server = createServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+
+    const shutdown = async () => {
+      try {
+        await server.close();
+      } finally {
+        process.exit(0);
+      }
+    };
+
+    process.on('SIGINT', () => {
+      void shutdown();
+    });
+
+    process.on('SIGTERM', () => {
+      void shutdown();
+    });
+
+    return;
+  }
+
+  if (transportMode !== 'http') {
+    throw new Error(`Unsupported MCP_TRANSPORT: ${transportMode}. Expected \"http\" or \"stdio\".`);
+  }
 
   // If MCP should run over HTTP (streamable), create an Express app
   const MCP_PORT = Number(process.env.MCP_PORT ?? 3000);

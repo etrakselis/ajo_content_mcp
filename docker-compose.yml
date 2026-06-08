@@ -2,6 +2,22 @@ services:
   ajo-content-mcp:
     build: .
     image: ajo-content-api-mcp-server
+    environment:
+      MCP_TRANSPORT: http
+      MCP_PORT: 3000
     stdin_open: true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config:/app/config:ro
+
+  ajo-content-mcp-stdio:
+    build: .
+    image: ajo-content-api-mcp-server
+    command: ["node", "dist/index.js"]
+    environment:
+      MCP_TRANSPORT: stdio
+    stdin_open: true
+    tty: true
     volumes:
       - ./config:/app/config:ro

@@ -17,7 +17,10 @@ test('stdio MCP server lists tools when Adobe env is configured', async (t) => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ['--import', 'tsx', 'src/index.ts'],
-    env: process.env
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: 'stdio'
+    }
   });
 
   const client = new Client({

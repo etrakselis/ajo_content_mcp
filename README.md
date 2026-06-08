@@ -1,5 +1,30 @@
 # Adobe Journey Optimizer Content API MCP server
 
+This project exposes Adobe Journey Optimizer Content API operations as MCP tools.
+
+## Quickstart
+
+Follow these steps if you want to get the server running quickly.
+
+1. Create a `config` folder.
+2. Add `config/credentials.json` with your Adobe credentials export.
+3. Add `config/settings.json` with your sandbox name.
+4. Build the Docker image.
+5. Start the server in either HTTP mode or stdio mode.
+6. Point your MCP client at the running server.
+
+If you are not sure which transport to use:
+
+- Use HTTP when your client connects to a URL like `http://localhost:3000/mcp`.
+- Use stdio when your client launches this server as a subprocess.
+
+## Prerequisites
+
+- Docker, if you want to run the containerized server
+- Node.js 20+, if you want to run the server directly
+- Adobe Journey Optimizer credentials exported as JSON
+- The Adobe sandbox name you want the server to use
+
 ## Recommended workspace layout
 
 ```text
@@ -16,6 +41,8 @@ Place the exported Adobe environment JSON at `config/credentials.json` and creat
 
 
 ## Dedicated settings file
+
+Create `config/settings.json` before starting the server.
 
 Create `config/settings.json` like this:
 
@@ -49,7 +76,7 @@ You can override the JSON path with:
 AJO_CREDENTIALS_FILE=/custom/path/credentials.json
 ```
 
-The example JSON file you shared contains keys such as `CLIENT_SECRET`, `API_KEY`, `ACCESS_TOKEN`, `SCOPES`, `TECHNICAL_ACCOUNT_ID`, `IMS`, and `IMS_ORG`. The loader maps those into the internal `AJO_*` variables used by the app. fileciteturn0file0
+The credentials loader expects the Adobe credentials export to provide values such as `CLIENT_SECRET`, `API_KEY`, `ACCESS_TOKEN`, `SCOPES`, `TECHNICAL_ACCOUNT_ID`, `IMS`, and `IMS_ORG`. It maps those into the internal `AJO_*` environment variables used by the app.
 
 ## Build
 
@@ -59,10 +86,65 @@ docker build -t ajo-content-api-mcp-server .
 
 ## Run
 
+Choose one of the following runtime modes.
+
+The default container mode is HTTP:
+
 ```bash
 docker run --rm -it \
+  -p 3000:3000 \
   -v "$(pwd)/config:/app/config:ro" \
   ajo-content-api-mcp-server
+```
+
+### Run in HTTP mode
+
+```bash
+docker run --rm -it \
+  -p 3000:3000 \
+  -e MCP_TRANSPORT=http \
+  -e MCP_PORT=3000 \
+  -v "$(pwd)/config:/app/config:ro" \
+  ajo-content-api-mcp-server
+```
+
+### Run in stdio mode
+
+```bash
+docker run --rm -i \
+  -e MCP_TRANSPORT=stdio \
+  -v "$(pwd)/config:/app/config:ro" \
+  ajo-content-api-mcp-server
+```
+
+Use stdio mode when your MCP client launches the containerized server as a subprocess and communicates over stdin/stdout.
+
+## Run Directly with Node.js
+
+Build the project first:
+
+```bash
+npm install
+npm run build
+```
+
+Run in HTTP mode:
+
+```bash
+AJO_SETTINGS_FILE="$(pwd)/config/settings.json" \
+AJO_CREDENTIALS_FILE="$(pwd)/config/credentials.json" \
+MCP_TRANSPORT=http \
+MCP_PORT=3000 \
+node dist/index.js
+```
+
+Run in stdio mode:
+
+```bash
+AJO_SETTINGS_FILE="$(pwd)/config/settings.json" \
+AJO_CREDENTIALS_FILE="$(pwd)/config/credentials.json" \
+MCP_TRANSPORT=stdio \
+node dist/index.js
 ```
 
 ## Docker Compose
@@ -72,15 +154,48 @@ services:
   ajo-content-mcp:
     build: .
     image: ajo-content-api-mcp-server
+    environment:
+      MCP_TRANSPORT: http
+      MCP_PORT: 3000
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./config:/app/config:ro
+
+  ajo-content-mcp-stdio:
+    build: .
+    image: ajo-content-api-mcp-server
+    command: ["node", "dist/index.js"]
+    environment:
+      MCP_TRANSPORT: stdio
+    stdin_open: true
+    tty: true
     volumes:
       - ./config:/app/config:ro
 ```
 
-With this layout, `credentials.json` and `settings.json` both live under the same mounted folder.
+With this layout, `credentials.json` and `settings.json` both live under the same mounted folder. Use `ajo-content-mcp` for HTTP clients and `ajo-content-mcp-stdio` for subprocess-based stdio clients.
 
 ## Connecting to the MCP Server
 
-This MCP server exposes an HTTP-streamable MCP endpoint at `/mcp`.
+This MCP server supports both stdio and HTTP-streamable transports.
+
+### Transport selection
+
+- `MCP_TRANSPORT=stdio` — runs as a stdio MCP server
+- `MCP_TRANSPORT=http` — runs the HTTP-streamable server at `/mcp` (default)
+
+Example stdio startup:
+
+```bash
+MCP_TRANSPORT=stdio node dist/index.js
+```
+
+This mode is intended for MCP clients that launch the server as a subprocess.
+
+### HTTP mode
+
+When `MCP_TRANSPORT` is unset or set to `http`, the server exposes an HTTP-streamable MCP endpoint at `/mcp`.
 
 ### Default URL
 
@@ -150,6 +265,106 @@ curl -X POST \
 
 - The server uses the HTTP-streamable transport, so the LLM or MCP client can receive streamed tool results and notifications.
 - The server is scoped to the sandbox defined in `config/settings.json` and authenticated via `config/credentials.json`.
+
+## MCP Client Configuration Examples
+
+Use the following examples based on the client you are configuring. For subprocess-based MCP clients, use `MCP_TRANSPORT=stdio`. For URL-based MCP clients, point them at `http://localhost:3000/mcp`.
+
+### Claude Desktop example
+
+Example `claude_desktop_config.json` snippet for a local stdio launch:
+
+```json
+{
+  "mcpServers": {
+    "ajo-content": {
+      "command": "node",
+      "args": ["/absolute/path/to/ajo-content-mcp-server/dist/index.js"],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "AJO_SETTINGS_FILE": "/absolute/path/to/config/settings.json",
+        "AJO_CREDENTIALS_FILE": "/absolute/path/to/config/credentials.json"
+      }
+    }
+  }
+}
+```
+
+For an HTTP-connected client shape, use:
+
+```json
+{
+  "mcpServers": {
+    "ajo-content": {
+      "url": "http://localhost:3000/mcp"
+    }
+  }
+}
+```
+
+### Codex example
+
+Example MCP server entry for Codex using the local stdio process:
+
+```json
+{
+  "mcpServers": {
+    "ajo-content": {
+      "command": "node",
+      "args": ["/absolute/path/to/ajo-content-mcp-server/dist/index.js"],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "AJO_SETTINGS_FILE": "/absolute/path/to/config/settings.json",
+        "AJO_CREDENTIALS_FILE": "/absolute/path/to/config/credentials.json"
+      }
+    }
+  }
+}
+```
+
+During development, you can swap the `args` value to `["--import", "tsx", "/absolute/path/to/ajo-content-mcp-server/src/index.ts"]`.
+
+Or with Docker:
+
+```json
+{
+  "mcpServers": {
+    "ajo-content": {
+      "command": "docker",
+      "args": [
+        "run",
+        "--rm",
+        "-i",
+        "-e",
+        "MCP_TRANSPORT=stdio",
+        "-v",
+        "/absolute/path/to/config:/app/config:ro",
+        "ajo-content-api-mcp-server"
+      ]
+    }
+  }
+}
+```
+
+### Cursor example
+
+Example Cursor MCP configuration using the local stdio process:
+
+```json
+{
+  "mcpServers": {
+    "ajo-content": {
+      "command": "node",
+      "args": ["/absolute/path/to/ajo-content-mcp-server/dist/index.js"],
+      "env": {
+        "MCP_TRANSPORT": "stdio",
+        "AJO_SETTINGS_FILE": "/absolute/path/to/config/settings.json",
+        "AJO_CREDENTIALS_FILE": "/absolute/path/to/config/credentials.json"
+      }
+    }
+  }
+}
+```
 
 ## Available Tools for LLM Integration
 

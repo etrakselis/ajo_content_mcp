@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { createMcpExpressApp } from '@modelcontextprotocol/sdk/server/express.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
@@ -155,6 +156,30 @@ async function main() {
         }
         return server;
     };
+    const transportMode = (process.env.MCP_TRANSPORT ?? 'http').trim().toLowerCase();
+    if (transportMode === 'stdio') {
+        const server = createServer();
+        const transport = new StdioServerTransport();
+        await server.connect(transport);
+        const shutdown = async () => {
+            try {
+                await server.close();
+            }
+            finally {
+                process.exit(0);
+            }
+        };
+        process.on('SIGINT', () => {
+            void shutdown();
+        });
+        process.on('SIGTERM', () => {
+            void shutdown();
+        });
+        return;
+    }
+    if (transportMode !== 'http') {
+        throw new Error(`Unsupported MCP_TRANSPORT: ${transportMode}. Expected \"http\" or \"stdio\".`);
+    }
     // If MCP should run over HTTP (streamable), create an Express app
     const MCP_PORT = Number(process.env.MCP_PORT ?? 3000);
     const app = createMcpExpressApp();
