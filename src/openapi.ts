@@ -202,7 +202,9 @@ export function chooseAcceptHeader(op: OperationDef): string {
   return preferJsonContentType(op.responseContentTypes) ?? op.requestBody?.contentType ?? 'application/json';
 }
 
-export function toRequestBody(body: unknown, contentType: string): BodyInit | undefined {
+type RequestBodyValue = string | Uint8Array;
+
+export function toRequestBody(body: unknown, contentType: string): RequestBodyValue | undefined {
   if (body === undefined) return undefined;
   if (contentType.includes('json') || contentType.includes('+json')) return JSON.stringify(body);
   if (typeof body === 'string') return body;

@@ -52,5 +52,7 @@ export declare function replacePathParams(template: string, params: Record<strin
 export declare function buildQueryString(query: Record<string, unknown> | undefined): string;
 export declare function denormalizeParameterObject(values: Record<string, unknown> | undefined, parameters: ParameterDef[]): Record<string, unknown> | undefined;
 export declare function chooseAcceptHeader(op: OperationDef): string;
-export declare function toRequestBody(body: unknown, contentType: string): BodyInit | undefined;
+type RequestBodyValue = string | Uint8Array;
+export declare function toRequestBody(body: unknown, contentType: string): RequestBodyValue | undefined;
 export declare function schemaFromJsonSchema(schema: JsonSchema, components: Record<string, JsonSchema>): z.ZodTypeAny;
+export {};

@@ -7,6 +7,7 @@ async function run() {
     args: ['--import', 'tsx', 'src/index.ts'],
     env: {
       ...process.env,
+      MCP_TRANSPORT: 'stdio',
       AJO_API_KEY: 'b1cd32a3cbd845b09bdd8f27c3276d78',
       AJO_CLIENT_SECRET: 'p8e-rfxXbj8WggBI0KuA2Kpg69_dfhVuzOgx',
       AJO_SCOPES: 'cjm.suppression_service.client.delete,cjm.suppression_service.client.all,openid,session,AdobeID,read_organizations,additional_info.projectedProductContext',
@@ -29,11 +30,13 @@ async function run() {
     const result = await client.callTool({
       name: 'createTemplate',
       arguments: {
-        name: 'MCP Connection Test Template',
-        templateType: 'html',
-        channels: ['email'],
-        template: {
-          html: '<html><body style="color: blue;">Hello from Codex! Testing MCP connection via node script.</body></html>'
+        body: {
+          name: 'MCP Connection Test Template',
+          templateType: 'html',
+          channels: ['email'],
+          template: {
+            html: '<html><body style="color: blue;">Hello from Codex! Testing MCP connection via node script.</body></html>'
+          }
         }
       }
     });

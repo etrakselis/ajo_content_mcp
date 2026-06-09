@@ -40,6 +40,19 @@ export class AdobeTokenManager {
     return Date.now() >= record.expiresAtMs - this.config.tokenSkewSeconds * 1000;
   }
 
+  private formatFetchError(error: unknown, context: string): Error {
+    if (error instanceof Error) {
+      const cause = (error as Error & { cause?: unknown }).cause;
+      const causeMessage = cause instanceof Error
+        ? cause.message
+        : cause !== undefined
+          ? String(cause)
+          : "";
+      return new Error(`${context}: ${error.message}${causeMessage ? ` (cause: ${causeMessage})` : ""}`);
+    }
+    return new Error(`${context}: ${String(error)}`);
+  }
+
   private async fetchToken(): Promise<TokenRecord> {
     const body = new URLSearchParams({
       grant_type: 'client_credentials',
@@ -81,6 +94,8 @@ export class AdobeTokenManager {
         accessToken: parsed.access_token,
         expiresAtMs: Date.now() + safeExpires * 1000
       };
+    } catch (error) {
+      throw this.formatFetchError(error, `Token request failed for ${this.config.tokenUrl}`);
     } finally {
       clearTimeout(timer);
     }

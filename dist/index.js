@@ -309,13 +309,13 @@ async function main() {
                 transport.onclose = async () => {
                     const sid = transport.sessionId;
                     if (sid && transports[sid]) {
+                        delete transports[sid];
                         try {
-                            await transports[sid].transport.close();
+                            await transports[sid]?.server?.close?.();
                         }
                         catch {
                             // ignore cleanup errors
                         }
-                        delete transports[sid];
                     }
                 };
                 transport.onerror = (error) => {

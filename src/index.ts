@@ -36,6 +36,19 @@ type Config = {
 
 type TransportMode = 'http' | 'stdio';
 
+function formatErrorDetails(error: unknown): string {
+  if (error instanceof Error) {
+    const cause = (error as Error & { cause?: unknown }).cause;
+    const causeMessage = cause instanceof Error
+      ? cause.message
+      : cause !== undefined
+        ? String(cause)
+        : '';
+    return `${error.message}${causeMessage ? ` (cause: ${causeMessage})` : ''}`;
+  }
+  return String(error);
+}
+
 function loadConfig(): Config {
   const baseUrl = process.env.AJO_BASE_URL ?? 'https://platform.adobe.io/ajo/content';
   const apiKey = process.env.AJO_API_KEY;
@@ -190,7 +203,7 @@ async function callOperation(op: any, args: any, config: Config, tokenManager: A
 
     return formatSuccessResult(response, rawText);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = formatErrorDetails(error);
     return makeTextResult(`Failed to call ${op.operationId}: ${message}`, true);
   } finally {
     clearTimeout(timeout);
@@ -426,12 +439,12 @@ async function main() {
         transport.onclose = async () => {
           const sid = transport.sessionId;
           if (sid && transports[sid]) {
+            delete transports[sid];
             try {
-              await transports[sid].transport.close();
+              await transports[sid]?.server?.close?.();
             } catch {
               // ignore cleanup errors
             }
-            delete transports[sid];
           }
         };
 
