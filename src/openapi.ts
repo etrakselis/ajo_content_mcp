@@ -257,8 +257,9 @@ function collectResponseContentTypes(responses: Record<string, any>, componentRe
 }
 
 function preferJsonContentType(contentTypes: string[]): string | undefined {
-  return contentTypes.find((value) => value === 'application/json')
+  return contentTypes.find((value) => value.includes('vnd.adobe') && value.includes('+json'))
     ?? contentTypes.find((value) => value.includes('+json'))
+    ?? contentTypes.find((value) => value === 'application/json')
     ?? contentTypes.find((value) => value.includes('json'))
     ?? contentTypes[0];
 }
