@@ -162,6 +162,15 @@ async function callOperation(op: any, args: any, config: Config, tokenManager: A
     if (body !== undefined) {
       headers['Content-Type'] = op.requestBody?.contentType ?? 'application/json';
     }
+    console.error('[AJO MCP] Outbound request', JSON.stringify({
+      operationId: op.operationId,
+      method: op.method.toUpperCase(),
+      url: url.toString(),
+      accept: headers.Accept,
+      contentType: headers['Content-Type'] ?? null,
+      hasBody: body !== undefined,
+      forceRefresh
+    }));
     return fetch(url, {
       method: op.method.toUpperCase(),
       headers,
